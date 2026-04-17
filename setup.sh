@@ -15,7 +15,7 @@ warn()    { echo -e "${YELLOW}[!]${NC} $1"; }
 die()     { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 banner()  { echo -e "\n${BOLD}$1${NC}"; }
 
-# ── Docker command (may be prefixed with sudo) ─────────────────────────────
+# ── Docker command (may be prefixed with sudo) ────────────────────────────────
 DOCKER_CMD="docker"
 COMPOSE_CMD=""
 
@@ -29,7 +29,6 @@ if grep -qiE "microsoft|wsl" /proc/version 2>/dev/null; then
   info "WSL environment detected"
 fi
 
-# Detect distro for package manager
 DISTRO="unknown"
 PKG_MGR="unknown"
 if [ -f /etc/os-release ]; then
@@ -46,7 +45,24 @@ fi
 
 info "Distro: $DISTRO | Package manager: $PKG_MGR | WSL: $IS_WSL"
 
-# ── 2. Check / Install Docker ─────────────────────────────────────────────────
+# ── 2. Check / Install git ────────────────────────────────────────────────────
+banner "── Checking git ──"
+
+if ! command -v git &>/dev/null; then
+  warn "git not found. Installing..."
+  case "$PKG_MGR" in
+    apt)    sudo apt-get update -qq && sudo apt-get install -y -qq git ;;
+    pacman) sudo pacman -Sy --noconfirm git ;;
+    dnf)    sudo dnf install -y git ;;
+    yum)    sudo yum install -y git ;;
+    *)      die "Cannot auto-install git. Install it manually then re-run this script." ;;
+  esac
+  ok "git installed."
+else
+  ok "git is installed: $(git --version)"
+fi
+
+# ── 3. Check / Install Docker ─────────────────────────────────────────────────
 banner "── Checking Docker ──"
 
 if ! command -v docker &>/dev/null; then
@@ -98,7 +114,7 @@ else
   ok "Docker is installed: $(docker --version 2>/dev/null | head -1)"
 fi
 
-# ── 3. Check / Install Docker Compose ────────────────────────────────────────
+# ── 4. Check / Install Docker Compose ────────────────────────────────────────
 if docker compose version &>/dev/null 2>&1; then
   COMPOSE_CMD="docker compose"
   ok "Docker Compose v2 available"
@@ -123,7 +139,6 @@ else
       ;;
   esac
   ok "Docker Compose installed."
-  # Re-check after install
   if docker compose version &>/dev/null 2>&1; then
     COMPOSE_CMD="docker compose"
   else
@@ -131,30 +146,26 @@ else
   fi
 fi
 
-# ── 4. Start Docker daemon ────────────────────────────────────────────────────
+# ── 5. Start Docker daemon ────────────────────────────────────────────────────
 banner "── Starting Docker daemon ──"
 
 start_docker_daemon() {
-  # Try systemd first
   if command -v systemctl &>/dev/null && systemctl is-system-running &>/dev/null 2>&1; then
     sudo systemctl enable docker --now 2>/dev/null || true
     sudo systemctl start docker 2>/dev/null || true
   elif command -v service &>/dev/null; then
-    # SysV init / WSL without systemd
     sudo service docker start 2>/dev/null || true
   else
-    # Last resort: start dockerd directly (common in WSL minimal setups)
     warn "No init system found. Starting dockerd directly..."
     sudo dockerd > /tmp/dockerd.log 2>&1 &
   fi
 
-  # Wait up to 20s for daemon to be ready
   local tries=0
   while ! docker info &>/dev/null 2>&1; do
     sleep 1
     tries=$((tries + 1))
     if [ "$tries" -ge 20 ]; then
-      die "Docker daemon failed to start after 20s.\nCheck logs: /tmp/dockerd.log or 'sudo journalctl -u docker'"
+      die "Docker daemon failed to start after 20s.\nCheck: /tmp/dockerd.log or 'sudo journalctl -u docker'"
     fi
   done
 }
@@ -167,7 +178,7 @@ else
   ok "Docker daemon is running."
 fi
 
-# ── 5. Fix Docker group permissions ──────────────────────────────────────────
+# ── 6. Fix Docker group permissions ──────────────────────────────────────────
 if ! docker ps &>/dev/null 2>&1; then
   warn "User '$USER' cannot access Docker socket. Adding to docker group..."
   sudo usermod -aG docker "$USER"
@@ -182,7 +193,7 @@ else
   ok "Docker permissions OK (no sudo needed)."
 fi
 
-# ── 6. Check Python3 or openssl (for token generation) ───────────────────────
+# ── 7. Check Python3 / jq / openssl (for token generation) ───────────────────
 banner "── Checking dependencies ──"
 
 HAS_PYTHON3=false
@@ -197,7 +208,6 @@ if command -v jq &>/dev/null; then
   ok "jq found"
 fi
 
-# Token generation: python3 > openssl > /dev/urandom
 generate_token() {
   if $HAS_PYTHON3; then
     python3 -c "import secrets; print(secrets.token_hex(24))"
@@ -208,7 +218,6 @@ generate_token() {
   fi
 }
 
-# JSON token extraction
 get_current_token() {
   local file="$1"
   if $HAS_PYTHON3; then
@@ -216,12 +225,10 @@ get_current_token() {
   elif $HAS_JQ; then
     jq -r '.gateway.auth.token // ""' "$file"
   else
-    # bare grep fallback
     grep -o '"token": *"[^"]*"' "$file" | head -1 | sed 's/.*"\([^"]*\)"$/\1/'
   fi
 }
 
-# JSON token replacement
 set_token_in_json() {
   local file="$1"
   local token="$2"
@@ -241,12 +248,11 @@ PYEOF
     jq --arg tok "$token" '.gateway.auth.token = $tok' "$file" > "$tmp"
     mv "$tmp" "$file"
   else
-    # sed fallback — works for the known placeholder string
     sed -i "s/CHANGE_ME_USE_SETUP_SH_TO_AUTO_GENERATE/$token/g" "$file"
   fi
 }
 
-# ── 7. Check port availability ────────────────────────────────────────────────
+# ── 8. Check port availability ────────────────────────────────────────────────
 banner "── Checking ports ──"
 
 check_port() {
@@ -256,12 +262,12 @@ check_port() {
   elif command -v netstat &>/dev/null; then
     netstat -tlnp 2>/dev/null | grep -q ":${port} " && return 0 || return 1
   fi
-  return 1  # can't check, assume free
+  return 1
 }
 
 if check_port 18789; then
   warn "Port 18789 is already in use. OpenClaw gateway may fail to start."
-  warn "Check what's using it: ss -tlnp | grep 18789"
+  warn "Check: ss -tlnp | grep 18789"
 else
   ok "Port 18789 is free."
 fi
@@ -272,7 +278,7 @@ else
   ok "Port 18790 is free."
 fi
 
-# ── 8. Create ~/.openclaw config ──────────────────────────────────────────────
+# ── 9. Create ~/.openclaw config ──────────────────────────────────────────────
 banner "── Setting up config ──"
 
 mkdir -p "$OPENCLAW_CONFIG"
@@ -284,7 +290,7 @@ else
   warn "Config already exists at $OPENCLAW_CONFIG/openclaw.json — skipping. Delete it to reset."
 fi
 
-# ── 9. Generate gateway auth token ───────────────────────────────────────────
+# ── 10. Generate gateway auth token ───────────────────────────────────────────
 CURRENT_TOKEN=$(get_current_token "$OPENCLAW_CONFIG/openclaw.json")
 
 if [ "$CURRENT_TOKEN" = "CHANGE_ME_USE_SETUP_SH_TO_AUTO_GENERATE" ] || [ -z "$CURRENT_TOKEN" ]; then
@@ -296,7 +302,7 @@ else
   ok "Gateway token already set."
 fi
 
-# ── 10. Set up workspace ──────────────────────────────────────────────────────
+# ── 11. Set up workspace ──────────────────────────────────────────────────────
 banner "── Setting up workspace ──"
 
 mkdir -p "$OPENCLAW_WORKSPACE/.openclaw"
@@ -313,9 +319,9 @@ if [ ! -f "$OPENCLAW_WORKSPACE/.openclaw/workspace-state.json" ]; then
      "$OPENCLAW_WORKSPACE/.openclaw/workspace-state.json"
 fi
 
-# ── 11. Write .env with absolute paths ───────────────────────────────────────
-#  IMPORTANT: Docker Compose does NOT expand '~' in .env volume paths.
-#  We must write real absolute paths here.
+# ── 12. Write .env with absolute paths ───────────────────────────────────────
+# IMPORTANT: Docker Compose does NOT expand '~' in .env volume paths.
+# We must write real absolute paths here.
 banner "── Writing .env ──"
 
 if [ ! -f "$SCRIPT_DIR/.env" ]; then
@@ -328,7 +334,6 @@ OPENCLAW_GATEWAY_BIND=lan
 EOF
   ok "Created .env with absolute paths"
 else
-  # Check if the existing .env still has the ~ placeholder and fix it
   if grep -q "~/" "$SCRIPT_DIR/.env"; then
     warn ".env contains '~/' paths — Docker won't expand these. Fixing..."
     sed -i "s|~/.openclaw|${OPENCLAW_CONFIG}|g" "$SCRIPT_DIR/.env"
@@ -339,27 +344,57 @@ else
   fi
 fi
 
-# ── 12. Check Ollama ──────────────────────────────────────────────────────────
+# ── 13. Check / Install / Start Ollama ───────────────────────────────────────
 banner "── Checking Ollama ──"
 
 OLLAMA_OK=false
-if curl -sf http://localhost:11434 &>/dev/null; then
+
+# Check if already running
+if curl -sf http://localhost:11434 &>/dev/null || curl -sf http://127.0.0.1:11434 &>/dev/null; then
   OLLAMA_OK=true
-  ok "Ollama is running on localhost:11434"
-elif curl -sf http://127.0.0.1:11434 &>/dev/null; then
-  OLLAMA_OK=true
-  ok "Ollama is running on 127.0.0.1:11434"
+  ok "Ollama is already running on port 11434"
 else
-  warn "Ollama is NOT running on port 11434."
-  warn "Models will not work until Ollama is started."
-  if command -v ollama &>/dev/null; then
-    warn "Ollama is installed. Start it with: ollama serve"
+  # Install if missing
+  if ! command -v ollama &>/dev/null; then
+    info "Ollama not found. Installing via official installer..."
+    curl -fsSL https://ollama.com/install.sh | sh
+    ok "Ollama installed."
   else
-    warn "Ollama not installed. Get it at: https://ollama.com"
+    ok "Ollama binary found at $(command -v ollama)"
+  fi
+
+  # Try to start via systemd first, then background fallback
+  info "Starting Ollama..."
+  if command -v systemctl &>/dev/null && systemctl is-system-running &>/dev/null 2>&1; then
+    sudo systemctl enable ollama --now 2>/dev/null || true
+    sudo systemctl start ollama 2>/dev/null || true
+  else
+    # WSL or no systemd: start in background
+    nohup ollama serve > /tmp/ollama.log 2>&1 &
+    OLLAMA_PID=$!
+    info "Ollama started in background (PID $OLLAMA_PID). Log: /tmp/ollama.log"
+  fi
+
+  # Wait up to 15s for Ollama to be ready
+  info "Waiting for Ollama to be ready..."
+  tries=0
+  while ! curl -sf http://localhost:11434 &>/dev/null; do
+    sleep 1
+    tries=$((tries + 1))
+    if [ "$tries" -ge 15 ]; then
+      warn "Ollama did not respond in 15s. It may still be starting up."
+      warn "If models don't work, run: ollama serve"
+      break
+    fi
+  done
+
+  if curl -sf http://localhost:11434 &>/dev/null; then
+    OLLAMA_OK=true
+    ok "Ollama is running."
   fi
 fi
 
-# ── 13. Pull image and start containers ───────────────────────────────────────
+# ── 14. Pull image and start containers ───────────────────────────────────────
 banner "── Starting OpenClaw ──"
 
 cd "$SCRIPT_DIR"
@@ -372,8 +407,61 @@ $COMPOSE_CMD up -d
 
 ok "Containers started."
 
-# ── 14. Done ──────────────────────────────────────────────────────────────────
+# ── 15. Write info.sh — print dashboard URL + token anytime ──────────────────
+cat > "$SCRIPT_DIR/info.sh" <<'INFOSH'
+#!/usr/bin/env bash
+OPENCLAW_CONFIG="$HOME/.openclaw"
+CONFIG_FILE="$OPENCLAW_CONFIG/openclaw.json"
+BOLD='\033[1m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo "Config not found at $CONFIG_FILE. Run ./setup.sh first."
+  exit 1
+fi
+
+# Extract token (python3 > jq > grep fallback)
+if command -v python3 &>/dev/null; then
+  TOKEN=$(python3 -c "import json; d=json.load(open('$CONFIG_FILE')); print(d['gateway']['auth']['token'])")
+elif command -v jq &>/dev/null; then
+  TOKEN=$(jq -r '.gateway.auth.token' "$CONFIG_FILE")
+else
+  TOKEN=$(grep -o '"token": *"[^"]*"' "$CONFIG_FILE" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+fi
+
+# Detect WSL and get IP
+IS_WSL=false
+WSL_IP=""
+if grep -qiE "microsoft|wsl" /proc/version 2>/dev/null; then
+  IS_WSL=true
+  WSL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+fi
+
+echo ""
+echo -e "${GREEN}${BOLD}══════════════════════════════════════════${NC}"
+echo -e "${GREEN}${BOLD}  OpenClaw Dashboard${NC}"
+echo -e "${GREEN}${BOLD}══════════════════════════════════════════${NC}"
+echo ""
+echo -e "  URL:    ${BOLD}http://localhost:18789${NC}"
+echo -e "  Token:  ${BOLD}${TOKEN}${NC}"
+echo ""
+if $IS_WSL && [ -n "$WSL_IP" ]; then
+  echo -e "  ${YELLOW}WSL detected — if localhost doesn't open in Windows Chrome:${NC}"
+  echo -e "  Use:    ${BOLD}http://${WSL_IP}:18789${NC}"
+  echo ""
+fi
+echo "  Paste the URL in your browser, then enter the token to log in."
+echo ""
+INFOSH
+
+chmod +x "$SCRIPT_DIR/info.sh"
+ok "Created info.sh — run it anytime to see your dashboard URL and token."
+
+# ── 16. Final output ──────────────────────────────────────────────────────────
 GATEWAY_TOKEN=$(get_current_token "$OPENCLAW_CONFIG/openclaw.json")
+WSL_IP=""
+if $IS_WSL; then
+  WSL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+fi
 
 echo ""
 echo -e "${GREEN}${BOLD}══════════════════════════════════════════${NC}"
@@ -384,16 +472,24 @@ echo -e "  URL:    ${BOLD}http://localhost:18789${NC}"
 echo -e "  Token:  ${BOLD}${GATEWAY_TOKEN}${NC}"
 echo ""
 
-if ! $OLLAMA_OK; then
-  echo -e "  ${YELLOW}⚠ Ollama is not running. Start it with: ollama serve${NC}"
+if $IS_WSL && [ -n "$WSL_IP" ]; then
+  echo -e "  ${YELLOW}WSL detected — to open from Windows Chrome:${NC}"
+  echo -e "  Try localhost first: ${BOLD}http://localhost:18789${NC}"
+  echo -e "  If that fails, use:  ${BOLD}http://${WSL_IP}:18789${NC}"
   echo ""
 fi
 
-if groups "$USER" 2>/dev/null | grep -qv docker && ! docker ps &>/dev/null 2>&1; then
+if ! $OLLAMA_OK; then
+  echo -e "  ${YELLOW}⚠ Ollama may still be starting. If models fail, run: ollama serve${NC}"
+  echo ""
+fi
+
+if ! docker ps &>/dev/null 2>&1; then
   echo -e "  ${YELLOW}⚠ Log out and back in for Docker to work without sudo.${NC}"
   echo ""
 fi
 
-echo "  To stop:   $COMPOSE_CMD down"
-echo "  To update: $DOCKER_CMD pull ghcr.io/openclaw/openclaw:latest && $COMPOSE_CMD up -d"
+echo "  Show this info again:  ./info.sh"
+echo "  Stop:                  $COMPOSE_CMD down"
+echo "  Update:                $DOCKER_CMD pull ghcr.io/openclaw/openclaw:latest && $COMPOSE_CMD up -d"
 echo ""

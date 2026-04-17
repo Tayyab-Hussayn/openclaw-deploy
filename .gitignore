@@ -1,6 +1,9 @@
 # Environment — contains local paths, never commit
 .env
 
+# Generated at runtime by setup.sh
+info.sh
+
 # Workspace runtime (has its own git history, not part of this repo)
 workspace/
 
