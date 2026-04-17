@@ -52,6 +52,32 @@ Open the URL in your browser and paste the token to log in.
 
 ---
 
+## Configure OpenClaw (channels, models, plugins)
+
+After setup, run the interactive setup bridge:
+
+```bash
+chmod +x onboard.sh
+./onboard.sh
+```
+
+You get a prompt where you type what you want to do:
+
+```
+openclaw> connect whatsapp      ← scan QR code to link your WhatsApp
+openclaw> connect telegram      ← connect a Telegram bot
+openclaw> models                ← add/change AI model providers
+openclaw> configure             ← full interactive configuration wizard
+openclaw> status                ← check what's connected
+openclaw> doctor                ← run health checks
+openclaw> tui                   ← open the full terminal UI
+openclaw> help                  ← see all commands
+```
+
+All actual setup screens, QR codes, and prompts are handled by OpenClaw itself — `onboard.sh` just launches the right command for you.
+
+---
+
 ## WSL2 Users (accessing from Windows Chrome)
 
 Your OpenClaw runs inside WSL2 but is accessible from your Windows browser.
