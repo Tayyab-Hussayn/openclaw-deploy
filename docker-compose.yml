@@ -1,0 +1,28 @@
+services:
+  openclaw-gateway:
+    image: ghcr.io/openclaw/openclaw:latest
+    container_name: openclaw-gateway
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
+      - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
+    ports:
+      - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
+      - "${OPENCLAW_BRIDGE_PORT:-18790}:18790"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    init: true
+    command: ["node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789"]
+
+  openclaw-cli:
+    image: ghcr.io/openclaw/openclaw:latest
+    container_name: openclaw-cli
+    env_file: .env
+    volumes:
+      - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
+      - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    profiles: ["cli"]
+    entrypoint: ["node", "dist/index.js"]
