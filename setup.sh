@@ -344,13 +344,35 @@ generate_token() {
 
 get_current_token() {
   local file="$1"
-  if $HAS_PYTHON3; then
-    python3 -c "import json; d=json.load(open('$file')); print(d.get('gateway',{}).get('auth',{}).get('token',''))"
-  elif $HAS_JQ; then
-    jq -r '.gateway.auth.token // ""' "$file"
-  else
-    grep -o '"token": *"[^"]*"' "$file" | head -1 | sed 's/.*"\([^"]*\)"$/\1/'
+  local tok=""
+
+  # grep first — works even when OpenClaw writes non-standard JSON (comments, trailing commas)
+  tok=$(grep -o '"token": *"[^"]*"' "$file" 2>/dev/null \
+    | head -1 | sed 's/.*"token": *"\([^"]*\)"/\1/' || true)
+  [ -n "$tok" ] && { echo "$tok"; return; }
+
+  # jq fallback
+  if $HAS_JQ; then
+    tok=$(jq -r '.gateway.auth.token // ""' "$file" 2>/dev/null || true)
+    [ -n "$tok" ] && { echo "$tok"; return; }
   fi
+
+  # python3 last — strips comments and trailing commas before parsing
+  if $HAS_PYTHON3; then
+    tok=$(python3 -c "
+import json, re
+try:
+    raw = open('$file').read()
+    raw = re.sub(r'//.*', '', raw)
+    raw = re.sub(r',\s*([}\]])', r'\1', raw)
+    print(json.loads(raw)['gateway']['auth']['token'])
+except Exception:
+    pass
+" 2>/dev/null || true)
+    [ -n "$tok" ] && { echo "$tok"; return; }
+  fi
+
+  echo ""
 }
 
 set_token_in_json() {
