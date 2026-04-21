@@ -557,33 +557,72 @@ BOLD='\033[1m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
 [ -f "$CONFIG_FILE" ] || { echo "Config not found. Run ./setup.sh first."; exit 1; }
 
-if command -v python3 &>/dev/null; then
-  TOKEN=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['gateway']['auth']['token'])")
-elif command -v jq &>/dev/null; then
-  TOKEN=$(jq -r '.gateway.auth.token' "$CONFIG_FILE")
-else
-  TOKEN=$(grep -o '"token": *"[^"]*"' "$CONFIG_FILE" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+# Extract token — three methods in order of reliability.
+# OpenClaw sometimes writes non-standard JSON (comments, trailing commas)
+# so we avoid full JSON parsing and use grep as the primary method.
+TOKEN=""
+
+# Method 1: grep — works even if JSON is malformed
+TOKEN=$(grep -o '"token": *"[^"]*"' "$CONFIG_FILE" 2>/dev/null \
+  | head -1 | sed 's/.*"token": *"\([^"]*\)"/\1/')
+
+# Method 2: jq — if grep got nothing and jq is available
+if [ -z "$TOKEN" ] && command -v jq &>/dev/null; then
+  TOKEN=$(jq -r '.gateway.auth.token // ""' "$CONFIG_FILE" 2>/dev/null || true)
 fi
 
+# Method 3: python3 with error handling — last resort
+if [ -z "$TOKEN" ] && command -v python3 &>/dev/null; then
+  TOKEN=$(python3 -c "
+import json, re, sys
+try:
+    d = json.load(open('$CONFIG_FILE'))
+    print(d['gateway']['auth']['token'])
+except Exception:
+    # Try stripping comments then parsing
+    try:
+        raw = open('$CONFIG_FILE').read()
+        raw = re.sub(r'//.*', '', raw)
+        raw = re.sub(r',\s*([}\]])', r'\1', raw)
+        d = json.loads(raw)
+        print(d['gateway']['auth']['token'])
+    except Exception:
+        pass
+" 2>/dev/null || true)
+fi
+
+if [ -z "$TOKEN" ]; then
+  echo "Could not read token from $CONFIG_FILE"
+  echo "Open the file and look for: \"token\": \"...\""
+  exit 1
+fi
+
+# Detect WSL and get IP
 IS_WSL=false; WSL_IP=""
 grep -qiE "microsoft|wsl" /proc/version 2>/dev/null && IS_WSL=true
 $IS_WSL && WSL_IP=$(hostname -I 2>/dev/null | awk '{print $1}') || true
+
+# Build full clickable URLs with token embedded
+LOCAL_URL="http://localhost:18789/?token=${TOKEN}"
+WSL_URL="http://${WSL_IP}:18789/?token=${TOKEN}"
 
 echo ""
 echo -e "${GREEN}${BOLD}══════════════════════════════════════════${NC}"
 echo -e "${GREEN}${BOLD}  OpenClaw Dashboard${NC}"
 echo -e "${GREEN}${BOLD}══════════════════════════════════════════${NC}"
 echo ""
-echo -e "  URL:    ${BOLD}http://localhost:18789${NC}"
 echo -e "  Token:  ${BOLD}${TOKEN}${NC}"
 echo ""
 if $IS_WSL && [ -n "$WSL_IP" ]; then
-  echo -e "  ${YELLOW}Running in WSL — to open from Windows Chrome:${NC}"
-  echo -e "  Try first:  ${BOLD}http://localhost:18789${NC}"
-  echo -e "  Fallback:   ${BOLD}http://${WSL_IP}:18789${NC}"
+  echo -e "  ${YELLOW}Running in WSL — open one of these in Windows Chrome:${NC}"
   echo ""
+  echo -e "  Try first:  ${BOLD}${LOCAL_URL}${NC}"
+  echo -e "  Fallback:   ${BOLD}${WSL_URL}${NC}"
+else
+  echo -e "  Open in browser:  ${BOLD}${LOCAL_URL}${NC}"
 fi
-echo "  Open the URL in your browser and paste the token to log in."
+echo ""
+echo "  The token is already embedded in the URL — just click and you're in."
 echo ""
 INFOSH
 
@@ -591,23 +630,32 @@ chmod +x "$SCRIPT_DIR/info.sh"
 ok "Created info.sh — run ./info.sh anytime to see your URL and token."
 
 # ── 18. Final output ──────────────────────────────────────────────────────────
-GATEWAY_TOKEN=$(get_current_token "$OPENCLAW_CONFIG/openclaw.json")
+# Use grep for token extraction — avoids JSON parse errors from OpenClaw's config format
+GATEWAY_TOKEN=$(grep -o '"token": *"[^"]*"' "$OPENCLAW_CONFIG/openclaw.json" 2>/dev/null \
+  | head -1 | sed 's/.*"token": *"\([^"]*\)"/\1/' || true)
+[ -z "$GATEWAY_TOKEN" ] && GATEWAY_TOKEN=$(get_current_token "$OPENCLAW_CONFIG/openclaw.json")
+
 WSL_IP=""
 $IS_WSL && WSL_IP=$(hostname -I 2>/dev/null | awk '{print $1}') || true
+
+LOCAL_URL="http://localhost:18789/?token=${GATEWAY_TOKEN}"
 
 echo ""
 echo -e "${GREEN}${BOLD}══════════════════════════════════════════${NC}"
 echo -e "${GREEN}${BOLD}  OpenClaw is running!${NC}"
 echo -e "${GREEN}${BOLD}══════════════════════════════════════════${NC}"
 echo ""
-echo -e "  URL:    ${BOLD}http://localhost:18789${NC}"
 echo -e "  Token:  ${BOLD}${GATEWAY_TOKEN}${NC}"
 echo ""
 
 if $IS_WSL && [ -n "$WSL_IP" ]; then
-  echo -e "  ${YELLOW}Running in WSL — to open from Windows Chrome:${NC}"
-  echo -e "  Try first:  ${BOLD}http://localhost:18789${NC}"
-  echo -e "  Fallback:   ${BOLD}http://${WSL_IP}:18789${NC}"
+  echo -e "  ${YELLOW}Running in WSL — open one of these in Windows Chrome:${NC}"
+  echo ""
+  echo -e "  Try first:  ${BOLD}http://localhost:18789/?token=${GATEWAY_TOKEN}${NC}"
+  echo -e "  Fallback:   ${BOLD}http://${WSL_IP}:18789/?token=${GATEWAY_TOKEN}${NC}"
+  echo ""
+else
+  echo -e "  Open in browser:  ${BOLD}${LOCAL_URL}${NC}"
   echo ""
 fi
 
